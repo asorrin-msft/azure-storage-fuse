@@ -22,6 +22,8 @@ const std::string directorySignifier = ".directory";
 
 static struct fuse_operations azs_blob_readonly_operations;
 
+std::mutex file_info_map_mutex;
+std::unordered_map<std::string, std::shared_ptr<struct file_status>> file_info_map;
 
 
 int read_config(std::string configFile)
