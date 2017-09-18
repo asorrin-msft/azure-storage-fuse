@@ -8,6 +8,13 @@ int azs_mkdir(const char *path, mode_t mode)
 	}
 
 	std::string pathstr(path);
+	{
+		std::lock_guard<std::mutex> lock(file_info_map_mutex);
+		if (file_info_map.find(pathstr.substr(1)) != file_info_map.end())
+		{
+			return -EEXIST;
+		}
+	}
 	pathstr.insert(pathstr.size(), "/" + directorySignifier);
 
 	std::istringstream emptyDataStream("");
@@ -19,6 +26,11 @@ int azs_mkdir(const char *path, mode_t mode)
 	{
 		return 0 - map_errno(errno);
 	}
+
+	std::string pathstrcpy(path);
+	std::lock_guard<std::mutex> lock(file_info_map_mutex);
+	file_info_map[pathstrcpy.substr(1)] = std::make_shared<file_status>(0, 0, 0, true);
+
 	return 0;
 }
 
@@ -61,12 +73,14 @@ int azs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offse
 	{
 		fprintf(stdout, "result count = %lu\n", listResults.size());
 	}
+
+	std::lock_guard<std::mutex> lock(file_info_map_mutex);
 	for (; i < listResults.size(); i++)
 	{
 		int fillerResult;
 		// We need to parse out just the trailing part of the path name.
 		int len = listResults[i].name.size();
-		// Note - this code scans through the string(s) more often than necessary.
+		// TODO: simplify this tokenization logic - we already know the path to the directory.
 		if (len > 0)
 		{
 			char *nameCopy = (char *)malloc(len + 1);
@@ -87,6 +101,11 @@ int azs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offse
 			{
 				if (prevtoken && (strcmp(prevtoken, directorySignifier.c_str()) != 0))
 				{
+					if (file_info_map.find(listResults[i].name) == file_info_map.end())
+					{
+						file_info_map[listResults[i].name] = std::make_shared<file_status>(1, listResults[i].content_length, 0, false);
+					}
+
 					struct stat stbuf;
 					stbuf.st_mode = S_IFREG | 0777; // Regular file (not a directory)
 					stbuf.st_nlink = 1;
@@ -103,6 +122,10 @@ int azs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offse
 			{
 				if (prevtoken)
 				{
+					if (file_info_map.find(listResults[i].name) == file_info_map.end())
+					{
+						file_info_map[listResults[i].name] = std::make_shared<file_status>(0, 0, 0, true);
+					}
 					struct stat stbuf;
 					stbuf.st_mode = S_IFDIR | 0777;
 					stbuf.st_nlink = 2;
@@ -162,7 +185,7 @@ int azs_rmdir(const char *path)
 	mntPath = mntPathString.c_str();
 	if (AZS_PRINT)
 	{
-		fprintf(stdout, "deleting file %s\n", mntPath);
+		fprintf(stdout, "deleting directory %s\n", mntPath);
 	}
 	remove(mntPath);
 
@@ -172,6 +195,12 @@ int azs_rmdir(const char *path)
 	{
 		return ret;
 	}
+
+	std::lock_guard<std::mutex> lock(file_info_map_mutex);
+	file_info_map.erase(pathString.substr(1));
+
+
+	return 0;
 
 
 
@@ -221,8 +250,8 @@ int azs_rmdir(const char *path)
 			fprintf(stdout, "deleting file %s\n", mntPath);
 		}
 		remove(mntPath);
-		*/
+		
 
-	return 0;
+	return 0;*/
 
 }

@@ -65,7 +65,9 @@ struct file_status {
 	std::atomic<int> state;
 	std::atomic<unsigned long long> size;
 	std::atomic<int> open_handle_count; // This must be decremented in release(), not flush(), otherwise the could go below 0, as flush() could be called multiple times
-	file_status(int state, unsigned long long size, int open_handle_count) : state(state), size(size), open_handle_count(open_handle_count)
+	bool is_directory;
+	std::mutex cache_update_mutex;
+	file_status(int state, unsigned long long size, int open_handle_count, bool is_directory) : state(state), size(size), open_handle_count(open_handle_count), is_directory(is_directory), cache_update_mutex()
 	{
 
 	}

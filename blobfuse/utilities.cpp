@@ -177,6 +177,11 @@ int azs_getattr(const char *path, struct stat *stbuf)
 		return 0;
 	}
 
+	std::string blobNameStr(&(path[1]));
+
+	
+
+/*
 	// Check and see if the file/directory exists locally (because it's being buffered.)  If so, skip the call to Storage.
 	std::string pathString(path);
 	const char * mntPath;
@@ -188,7 +193,8 @@ int azs_getattr(const char *path, struct stat *stbuf)
 	if (AZS_PRINT)
 	{
 		fprintf(stdout, "accessing mntPath = %s returned %d\n", mntPathString.c_str(), acc);
-	}  if (acc != -1 )
+	}  
+	if (acc != -1 )
 	{
 		//(void) fi;
 		res = lstat(mntPathString.c_str(), stbuf);
@@ -200,8 +206,8 @@ int azs_getattr(const char *path, struct stat *stbuf)
 			return -errno;
 		return 0;
 	}
+	*/
 
-	std::string blobNameStr(&(path[1]));
 
 	errno = 0;
 	auto blob_property = azure_blob_client_wrapper->get_blob_property(str_options.containerName, blobNameStr);
