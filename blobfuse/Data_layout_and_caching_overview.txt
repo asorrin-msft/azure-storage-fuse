@@ -1,0 +1,273 @@
+Data layout
+We use virtual directories and blobs on the Azure Blob Storage service to represent a directory structure.  This is easiest explained via an example.  Say your file system layout is the following (lines ending in "/" are directories, files otherwise):
+
+
+
+root/
+root/file1
+root/file2
+root/dir1/
+root/dir1/filea
+root/dir1/fileb
+root/dir1/filec
+root/dir1/subdir1/
+root/dir1/subdir1/filex
+root/dir2/
+
+This will be represented by the following blobs on the service (note that forward slashes are used exclusively as directory separators):
+
+root/.directory
+root/file1
+root/file2
+root/dir1/.directory
+root/dir1/filea
+root/dir1/fileb
+root/dir1/filec
+root/dir1/subdir1/.directory
+root/dir1/subdir1/filex
+root/dir2/.directory
+
+Each file is represented by one blob that contains the data in the file.  Each directory is represented by a zero-length blob of the form:
+<directory name>/.directory
+This allows us to represent empty directories.
+
+When reading content, if the ".directory" blob does not exist, but there is otherwise a blob at a location whose path contains forward slashes, the existence of the directory is assumed.  This allows the FUSE driver to read data uploaded with other tools.
+
+
+
+Cache overview
+
+We have two different caches - the data cache, and the attribute cache.
+
+The data cache:
+The data cache is used to locally cache the content of the files/blobs.  It is implemented as a series of files on disk, the structure of which mimics the structure of the blobs and virtual directories on the service.  If the following blobs exist on the service:
+
+root/.directory
+root/file1
+root/file2
+root/dir1/.directory
+root/dir1/filea
+root/dir1/fileb
+root/dir1/filec
+root/dir1/subdir1/.directory
+root/dir1/subdir1/filex
+root/dir2/.directory
+
+Then the following files and directories may or may not exist on disk in the file cache:
+
+root/
+root/file1
+root/file2
+root/dir1/
+root/dir1/filea
+root/dir1/fileb
+root/dir1/filec
+root/dir1/subdir1/
+root/dir1/subdir1/filex
+root/dir2/
+
+Whether or not the files exist in the file cache depends on whether or not the files have been previously accessed by the FUSE adapter.
+No operation reading or writing data from/to a file is permitted to bypass the cache.
+
+When the FUSE adapter starts up, the cache is empty, containing no files or directories.
+When the FUSE adapter shuts down, the cache is deleted.  TODO: Delete the cache on startup as well.
+
+The following operations modify the file cache:
+
+- Create directory
+	- This API attempts to create the ".directory" file on the service.  If this succeeds, the mirroring directory is created in the cache.
+
+- Remove directory
+	- If the directory (on the service) is empty, this API will first remove the directory from the local cache, and then remove the ".directory" blob on the service.  If the directory (on the service) is empty, the local directory will also be empty (if it's not, this is a bug in the FUSE adapter.)
+	
+- File open
+	- This API first checks to see if the file being opened already exists in the file cache.  If it does exist, the timestamp of the file is checked.  If the file does not exist, or if the file in the cache is too old, the blob is downloaded in its entirety into the local cache.  (If the destination directory in the cache does not exist, it is first created).  A file handle is opened to this file in the cache.
+	
+- File create
+	- This API creates a zero-length file locally in the cache, creating the directory if it does not exist.  A file handle is opened to this file in the cache.
+	
+- File read
+	- This API reads data from the file cache into the caller.
+	
+- File write
+	- This APi writes data from the caller into the file cache.
+	
+- File Flush
+	- This API does not modify the cache, but it does upload the contents of this file in the cache to the blob, overwriting any existing data in the blob.
+	
+- File Release
+	- This API closes the file handle (to the file in the cache) that was opened in File Open or File Create.
+	
+- File Delete (Unlink)
+	- This API deletes the file from the local cache, and then deletes the blob on the Storage Service.
+	
+Additional notes:
+- Any required synchronization of modifications to the file cache is handled through locks in the attribute cache.
+- There must never be any files in the file cache that are not monitored and tracked in the attribute cache.  This restriction is relaxed for directories.
+- TODO: Implement a configurable max size for the file cache
+- TODO: Implement GC for files that age out of the cache.
+
+
+Attribute cache:
+The attribute cache is used to locally cache information about files and directories (blobs).  The information cached is the existence of the file / directory, whether the blob is a file or a directory, and the size of the file/blob.  The attribute cache also contains, for each file/directory, a state machine tracking the status of the file in the file cache, a count of the open handles to the file in the file cache (if it's a file), and a mutex controlling modifications to the file cache.  If the file does not exist in the file cache, then the size of the file/blob as reported in the attribute cache is equal to the size of the blob on the service.  Otherwise, the reported size is equal to the size of the file on disk in the file cache.  (This is what the size of the blob would be if 'flush' is called at the moment.)
+
+The attribute cache is implemented as a std::unordered_map (called file_info_map, aka attr cache, global to the process) mapping the path to the file (blob) to a struct containing the relevant information.  If an entry exists in the map, this means that either 1) the blob exists on the service, 2) the file has been created in the file cache but not yet flushed the service, or 3) the state is "0", which means that existence is being actively investigated in a create, open, or delete operation.
+
+The file_info_map is protected by a global mutex called file_info_map_mutex.  Each entry in the map also has a mutex called cache_update_mutex that guards updating the status of the file in the file cache associated with this attr cache item.
+
+We do not have a negative cache; we can look into implementing one of these if it becomes necessary.
+
+For files, the key into the cache is the full name of the blob.  This does not include the account or container name.  This also does not include the initial '/' that is included in paths input into the FUSE adapter.  For example:
+
+root/dir1/filea
+
+For directories, the key into the cache is the name of the blob representing the directory, except for the suffix:  "/.directory"  For example:
+
+root/dir1
+
+(Rationale: There are cases (getattr) where we do not know whether the item we are interested in is a file or a directory.  This method allows us to make one call into the map.)
+
+
+The state machine in the attribute cache the tracks the status of the file in the file cache is implemented as an std::atomic<int>, with the following states:
+
+0 = Unknown.  This indicates that a thread is actively investigating whether or not the blob exists, and is downloading it if it does exist.  In this state, the "size" parameter is *not* correct.  In general, when an operation sees this state, the mutex on the file should be acquired.  Once the mutex is acquired, the state should no longer be "0".  The cache_update_mutex should never be unlocked while the item is state "0".
+1 = Exists on the service, not locally.  The information regarding size and is_directory should be correct.  Open file handle count should be zero in this state.
+2 = Currently being downloaded.  In this state, the "size" parameter may be out-of-date.  The cache_update_mutex should never be unlocked while the item is state "2".
+3 = Exists locally.  The information regarding size, is_directory, and open file handle count should be correct.
+4 = Currently being uploaded.  The information regarding size, is_directory, and open file handle count should be correct.
+5 = Does not exist; this item is currently being removed from the attr cache.
+
+
+Almost every API uses the attribute cache.  Here is an overview of how each API interacts with the attribute cache:
+
+Directory APIs:
+- Create directory
+	- If the directory is successfully created both in the file cache and on the service, an entry is added to the attribute cache representing the directory.
+	- TODO: Investigate the behavior here when the directory already exists, either on the service but not locally, or on the service and locally.
+- Remove directory
+	- If the directory is successfully removed from the file cache and on the service, the corresponding entry (if it exists) is removed from the attribute cache.
+- Read directory
+	- This API lists (on the service) all files and subdirectories in the input directory.  For each file / directory listed, if a corresponding entry does not exist in the attribute cache, add it, state = "1".  Do NOT update any existing entries (because the current values must be preserved.)
+	- TODO: Read directory currently does not fail if the directory does not exist.  Once it does, we should update the logic to create an entry in the attribute cache for the input directory, if it does not exist.
+	
+Utilities:
+- Get attributes
+	- When getattr is called, the input value is first looked up in the cache.  
+		- If it exists in the attr cache, grab the mutex only if the state is "0" (which will ensure the state is no longer "0".)  The relevant attributes are then read from the attr cache and the method exits.  If the state is "5", signify that the item does not exist and return, releasing all mutexes.
+		- Otherwise, information about the file or directory is queried from the service.  If the blob is found:
+			1. Grab the file_info_map_mutex.
+			2. Check to see if the file now exists in the attr_cache.  (If so, that means another thread added it while we were querying the service.)  If it does exist, ignore the data read from the service and operate as if the data was in the attr cache all along, and return.
+			3. Create a file_status struct with state = "1", size = queried blob size, open_handle_count = 0.
+			4. Add the file_status struct to the attr cache.
+			5. Return, releasing all mutexes.
+	TODO: Consider implementing a negative cache for the case where the blob does not exist.  This may or may not be necessary, it depends on the access pattern.
+	TODO: If the entry does not exist in the attr cache, consider adding it to the attr cache with state "0" while the query is happening (similar to if open() is called when the item does not exist in the attr cache.)  This may result in fewer calls to the service, at the expense of additional locking and additional add/remove to the attr cache for cases when the blob actually does not exist.
+	
+File APIs:
+- Create file
+	- If the local file is successfully created in the file cache, a corresponding entry is added to the attribute cache, with state "3", size 0, open handles 1.
+	TODO: Check what happens if the file/blob already exists in the attr cache in this case.
+	TODO: Examine possible race conditions if multiple threads attempt to create the same file at the same time.
+	
+- Open file
+	- There are several potential cases.
+	- Case: The file does not exist in the attribute cache.  Here, still holding the file_info_map_mutex, we do the following steps:
+		1. Create the file_status struct.  Grab the cache_update_mutex on the just-created file_status struct.  Set the state to "0".
+		2. Add the newly-created file_status struct to the file_info_map.
+		3. Release the file_info_map_mutex.
+		4. Try to download the blob to the file cache.  If the download fails because the blob does not exist, set the state to "5", release the cache_update_mutex, remove the item from the attribute cache, and exit with a failure.
+		5. Set the state to "3", increment the open_handle_count.
+		6. Release the cache_update_mutex acquired in step 1.
+	- Case: The file does exist in the attribute cache.  
+		1. Release the file_info_map_mutex.  Grab the cache_update_mutex for this file.
+		2. Check the state.  It should be either "1", "3", "4", or "5".  "0" or "2" indicates a bug in the FUSE adapter; the mutex should not be acquire-able when the state is "0" or "2".
+		- Case: State "5" (blob does not exist on the service.)  Start over from the top (the item should no longer exist in the attr_cache).
+		- Case: State "1" (blob exists on the service, not in the local-file cache.
+			3. Set the state to "2"
+			4. Download the blob to the file cache
+			5. Set the state to "3"
+			6. Increment the open_handle_count.
+			7. Release the cache_update_mutex acquired in step 1.
+		- Case: State "3" or "4" (blob exists locally.)
+			3. Check the access time on the file in the local file cache and the current open_handle_count.  If the open_handle_count == 0 AND the local file is out of date, follow the steps above for the case when the state is "1" (set the state to "2", download the blob, set the state to "3", then continue to the next steps.)
+			4. Increment the open_handle_count.
+			5. Release the cache_update_mutex acquired in step 1.
+	- Regardless of prior steps followed, open a handle to the file in the file cache, then return.
+	
+- Read file
+	- No modifications to or reading from the attr cache.
+	
+- Write file
+	- Once the data is written to the local file, update the file size in the attr cache if necessary.  Use compare_exchange to ensure that this is done atomically (to guard against the case of multiple writers to this file.)
+	- No need to grab any mutex in this case.
+	
+- Flush file
+	1. If the fuse_file_info indicates that the file was opened read-only or was not modified, return.  Otherwise:
+	2. Grab the cache_update_mutex.
+	3. Set the state to "4".
+	4. Upload the file to the blob.
+	5. Set the state to "3".
+	6. Release the cache_update_mutex acquired in step 2.
+	
+- Release file
+	1. Decrement the open_handle_count.
+	
+- Delete (unlink) file
+	- Check to see if the file exists in the attr cache.  If it does not, while still holding the file_info_map_mutex:
+		1. Create the file_status struct.  Set the state to "5".
+		2. Add the newly-created file_status struct to the file_info_map.
+		3. Release the file_info_map_mutex.
+		4. Delete the blob from the service.
+		5. Grab the file_info_map_mutex.
+		6. Remove the newly-created item from the attr cache.
+		7. Release the file_info_map_mutex.
+	- If the file does exist in the attr cache:
+		1. Release the file_info_map_mutex.  Grab the cache_update_mutex.
+		2. Check that the open_handle_count = 0.  If not, release the cache_update_mutex, sleep for a few seconds (because the open_handle_count is decremented async), re-acquire the cache_update_mutex.  If the count still !=0, fail.
+		3. Set the state to "5".
+		4. Remove the file from the local file cache.
+		5. Release the cache_update_mutex.
+		6. Delete the blob from the service.
+		7. Acquire the file_info_map_mutex.
+		8. Remove the item from the attr cache.
+		9. Release the file_info_map_mutex.
+
+	
+Invariants:
+- Even if not stated above, any operations on the file_info_map attribute cache itself (meaning insert, remove, look up, etc - not operations on the underlying file_status value) must take place while the file_info_map_mutex is held.
+- Any operation that checks the existence of or reads the size of a file must first check that the state of the file is not "0", "2", or "5".  If the status is any of these, an attempt to hold the cache_update_mutex must be made.  Once the mutex is acquired, the state should no longer be "0" or "2" (it is impossible to acquire the mutex in these states).  If the status is now "5", the file does not exist.  Otherwise, the size should be accurate.
+- No I/O (either disk or network) should ever take place while the file_info_map_mutex is held.  This will ensure that we are not locking every blob/file during expensive operations.
+- No thread should ever hold more than one cache_update_mutex mutex at once.  This will help ensure we do not deadlock.
+- In general, no cache_update_mutex should ever be held simultaneously while the file_info_map_mutex is held.
+	The only permitted exception to these rules are cases where we need to insert or remove items from the attr cache while ensuring that no other thread operates on this item.  In this case, always hold the cache_update_mutex mutex was just created and has not yet been exposed to any other threads.  This ensures we will not deadlock.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
