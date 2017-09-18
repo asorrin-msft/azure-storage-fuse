@@ -54,6 +54,7 @@ std::vector<list_blobs_hierarchical_item> list_all_blobs_hierarchical(std::strin
 
 	std::string continuation;
 
+	std::string prior;
 	bool success = false;
 	int failcount = 0;
 	do
@@ -75,7 +76,16 @@ std::vector<list_blobs_hierarchical_item> list_all_blobs_hierarchical(std::strin
 				fprintf(stdout, "next_marker = %s\n", response.next_marker.c_str());
 			}
 			continuation = response.next_marker;
-			results.insert(results.end(), response.blobs.begin(), response.blobs.end());
+			if (response.blobs.size() > 0)
+			{
+				auto begin = response.blobs.begin();
+				if (response.blobs[0].name == prior)
+				{
+					std::advance(begin, 1);
+				}
+				results.insert(results.end(), begin, response.blobs.end());
+				prior = response.blobs.back().name;
+			}
 		}
 		else
 		{
@@ -172,17 +182,29 @@ int azs_getattr_set_from_file_status(std::shared_ptr<file_status> ptr, struct st
 	file_state = ptr->state.load();
 	if (file_state == 5)
 	{
+		if (AZS_PRINT)
+		{
+			fprintf(stdout, "State = 5, entity is being deleted!  Returning -ENOENT\n");
+		}
 		return -ENOENT;
 	}
 	
 	if (ptr->is_directory)
 	{
+		if (AZS_PRINT)
+		{
+			fprintf(stdout, "Directory found in cache!\n");
+		}
 		stbuf->st_mode = S_IFDIR | 0777;
 		stbuf->st_nlink = 2;
 		return 0;
 	}
 	else
 	{
+		if (AZS_PRINT)
+		{
+			fprintf(stdout, "File found in cache!\n");
+		}
 		stbuf->st_mode = S_IFREG | 0777; // Regular file (not a directory)
 		stbuf->st_nlink = 1;
 		stbuf->st_size = ptr->size.load();
@@ -206,15 +228,15 @@ int azs_getattr(const char *path, struct stat *stbuf)
 
 	std::string blobNameStr(&(path[1]));
 
+	file_info_map_mutex.lock();
+	auto info2 = file_info_map.find(blobNameStr);
+	if (info2 != file_info_map.end())
 	{
-		std::lock_guard<std::mutex> lock(file_info_map_mutex);
-		auto info = file_info_map.find(blobNameStr);
-		if (info != file_info_map.end())
-		{
-			std::shared_ptr<struct file_status> ptr = info->second;
-			return azs_getattr_set_from_file_status(ptr, stbuf);
-		}
+		file_info_map_mutex.unlock();
+		std::shared_ptr<struct file_status> ptr = info2->second;
+		return azs_getattr_set_from_file_status(ptr, stbuf);
 	}
+	file_info_map_mutex.unlock();
 	
 	errno = 0;
 	auto blob_property = azure_blob_client_wrapper->get_blob_property(str_options.containerName, blobNameStr);
@@ -237,6 +259,10 @@ int azs_getattr(const char *path, struct stat *stbuf)
 		}
 		else
 		{
+			if (AZS_PRINT)
+			{
+				fprintf(stdout, "File detected, being added to the cache\n");
+			}
 			file_info_map[blobNameStr] = std::make_shared<file_status>(1, blob_property.size, 0, false);
 			file_info_map_mutex.unlock();
 			stbuf->st_mode = S_IFREG | 0777; // Regular file (not a directory)
@@ -279,7 +305,11 @@ int azs_getattr(const char *path, struct stat *stbuf)
 			}
 			else
 			{
-				file_info_map[blobNameStrCpy] = std::make_shared<file_status>(0, 0, 0, false);
+				if (AZS_PRINT)
+				{
+					fprintf(stdout, "Directory detected, being added to the cache\n");
+				}
+				file_info_map[blobNameStrCpy] = std::make_shared<file_status>(0, 0, 0, true);
 				file_info_map_mutex.unlock();
 				stbuf->st_mode = S_IFDIR | 0777;
 				stbuf->st_nlink = 2;
@@ -288,6 +318,10 @@ int azs_getattr(const char *path, struct stat *stbuf)
 		}
 		else
 		{
+			if (AZS_PRINT)
+			{
+				fprintf(stdout, "Could not find blob or directory.e\n");
+			}
 			return -(ENOENT); // -2 = Entity does not exist.
 		}
 	}

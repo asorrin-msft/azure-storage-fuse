@@ -110,15 +110,17 @@ int azs_open(const char *path, struct fuse_file_info *fi)
 					entry->second->state.store(2);
 					
 					ensure_files_directory_exists(mntPathString);
-					std::ofstream filestream(mntPathString, std::ofstream::binary | std::ofstream::out);
-					errno = 0;
-					azure_blob_client_wrapper->download_blob_to_stream(str_options.containerName, blobString, 0ULL, 1000000000000ULL, filestream);
-					if (errno != 0)
 					{
-						int errno_ret = errno;
-						entry->second->state.store(1);
-						entry->second->cache_update_mutex.unlock();
-						return 0 - map_errno(errno_ret);
+						std::ofstream filestream(mntPathString, std::ofstream::binary | std::ofstream::out);
+						errno = 0;
+						azure_blob_client_wrapper->download_blob_to_stream(str_options.containerName, blobString, 0ULL, 1000000000000ULL, filestream);
+						if (errno != 0)
+						{
+							int errno_ret = errno;
+							entry->second->state.store(1);
+							entry->second->cache_update_mutex.unlock();
+							return 0 - map_errno(errno_ret);
+						}
 					}
 					
 					entry->second->state.store(3);
@@ -164,15 +166,13 @@ int azs_open(const char *path, struct fuse_file_info *fi)
 int azs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
 {
 	std::string pathString(path);
-	const char * mntPath;
 	std::string mntPathString = prepend_mnt_path_string(pathString);
-	mntPath = mntPathString.c_str();
 	int fd;
 	int res;
 
 	(void) fi;
 	if (fi == NULL)
-		fd = open(mntPath, O_RDONLY);
+		fd = open(mntPathString.c_str(), O_RDONLY);
 	else
 		fd = ((struct fhwrapper *)fi->fh)->fh;
 
@@ -200,13 +200,12 @@ int azs_create_parent_dir_exists(std::string pathString, mode_t mode, struct fus
 		file_info_map[pathString.substr(1)] = ptr;
 		file_info_map_mutex.unlock();
 		
-		const char * mntPath;
 		std::string mntPathString = prepend_mnt_path_string(pathString);
 		ensure_files_directory_exists(mntPathString);
-		int res = open(mntPath, fi->flags, mode);
+		int res = open(mntPathString.c_str(), fi->flags, mode);
 		if (AZS_PRINT)
 		{
-			fprintf(stdout, "mntPath = %s, result = %d\n", mntPath, res);
+			fprintf(stdout, "mntPath = %s, result = %d\n", mntPathString.c_str(), res);
 		}
 		if (res == -1)
 		{
@@ -232,13 +231,12 @@ int azs_create_parent_dir_exists(std::string pathString, mode_t mode, struct fus
 	{
 		file_info_map_mutex.unlock();
 		entry->second->cache_update_mutex.lock();
-		const char * mntPath;
 		std::string mntPathString = prepend_mnt_path_string(pathString);
 		ensure_files_directory_exists(mntPathString);
-		int res = open(mntPath, fi->flags, mode);
+		int res = open(mntPathString.c_str(), fi->flags, mode);
 		if (AZS_PRINT)
 		{
-			fprintf(stdout, "mntPath = %s, result = %d\n", mntPath, res);
+			fprintf(stdout, "mntPath = %s, result = %d\n", mntPathString.c_str(), res);
 		}
 		if (res == -1)
 		{
@@ -345,15 +343,13 @@ int azs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 int azs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
 {
 	std::string pathString(path);
-	const char * mntPath;
 	std::string mntPathString = prepend_mnt_path_string(pathString);
-	mntPath = mntPathString.c_str();
 	int fd;
 	int res;
 
 	(void) fi;
 	if (fi == NULL)
-		fd = open(mntPath, O_WRONLY);
+		fd = open(mntPathString.c_str(), O_WRONLY);
 	else
 		fd = ((struct fhwrapper *)fi->fh)->fh;
 
@@ -391,14 +387,12 @@ int azs_flush(const char *path, struct fuse_file_info *fi)
 		fprintf(stdout, "azs_flush called with path = %s, fi->flags = %d\n", path, fi->flags);
 	}
 	std::string pathString(path);
-	const char * mntPath;
 	std::string mntPathString = prepend_mnt_path_string(pathString);
-	mntPath = mntPathString.c_str();
 	if (AZS_PRINT)
 	{
-		fprintf(stdout, "Now accessing %s.\n", mntPath);
+		fprintf(stdout, "Now accessing %s.\n", mntPathString.c_str());
 	}
-	if (access(mntPath, F_OK) != -1 )
+	if (access(mntPathString.c_str(), F_OK) != -1 )
 	{
 		close(dup(((struct fhwrapper *)fi->fh)->fh));
 		if (((struct fhwrapper *)fi->fh)->upload)
@@ -416,7 +410,7 @@ int azs_flush(const char *path, struct fuse_file_info *fi)
 			
 			std::vector<std::pair<std::string, std::string>> metadata;
 			errno = 0;
-			azure_blob_client_wrapper->upload_file_to_blob(mntPath, str_options.containerName, pathString.substr(1), metadata, 8);
+			azure_blob_client_wrapper->upload_file_to_blob(mntPathString, str_options.containerName, pathString.substr(1), metadata, 8);
 			((struct fhwrapper *)fi->fh)->ptr->state.store(3);
 			if (errno != 0)
 			{
@@ -436,14 +430,12 @@ int azs_release(const char *path, struct fuse_file_info * fi)
 		fprintf(stdout, "azs_release called with path = %s, fi->flags = %d\n", path, fi->flags);
 	}
 	std::string pathString(path);
-	const char * mntPath;
 	std::string mntPathString = prepend_mnt_path_string(pathString);
-	mntPath = mntPathString.c_str();
 	if (AZS_PRINT)
 	{
-		fprintf(stdout, "Now accessing %s.\n", mntPath);
+		fprintf(stdout, "Now accessing %s.\n", mntPathString.c_str());
 	}
-	if (access(mntPath, F_OK) != -1 )
+	if (access(mntPathString.c_str(), F_OK) != -1 )
 	{
 		close(((struct fhwrapper *)fi->fh)->fh);
 		((struct fhwrapper *)fi->fh)->ptr->open_handle_count--;
@@ -460,6 +452,10 @@ int azs_release(const char *path, struct fuse_file_info * fi)
 
 int azs_unlink(const char *path)
 {
+	if (AZS_PRINT)
+	{
+		fprintf(stdout, "azs_unlink called with path = %s\n", path);
+	}
 	std::string pathString(path);
 	std::string blobString = pathString.substr(1);
 	
