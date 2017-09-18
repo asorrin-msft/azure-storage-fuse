@@ -26,14 +26,7 @@
 
 using namespace microsoft_azure::storage;
 
-struct fhwrapper {
-	int fh;
-	bool upload;
-	fhwrapper(int fh, bool upload) : fh(fh), upload(upload)
-	{
 
-	}
-};
 
 
 
@@ -46,9 +39,6 @@ struct str_options {
 
 extern struct str_options str_options;
 
-
-
-
 extern std::shared_ptr<blob_client_wrapper> azure_blob_client_wrapper;
 
 extern std::map<int, int> error_mapping;
@@ -56,12 +46,13 @@ extern std::map<int, int> error_mapping;
 extern const std::string directorySignifier;
 
 struct file_status {
-	// State machine.
+	// State machine.  See accompanying text file and diagram for detailed explanation.
 	// 0 = Unknown
 	// 1 = Exists on the service, not locally
 	// 2 = Currently being downloaded
 	// 3 = Exists locally
 	// 4 = Currently being uploaded
+	// 5 = Does not exist or currently being deleted
 	std::atomic<int> state;
 	std::atomic<unsigned long long> size;
 	std::atomic<int> open_handle_count; // This must be decremented in release(), not flush(), otherwise the could go below 0, as flush() could be called multiple times
@@ -76,6 +67,15 @@ struct file_status {
 extern std::mutex file_info_map_mutex;
 extern std::unordered_map<std::string, std::shared_ptr<struct file_status>> file_info_map;
 
+struct fhwrapper {
+	int fh;
+	bool upload;
+	std::shared_ptr<struct file_status> ptr;
+	fhwrapper(int fh, bool upload, std::shared_ptr<struct file_status> ptr) : fh(fh), upload(upload), ptr(ptr)
+	{
+
+	}
+};
 
 int map_errno(int error);
 std::string prepend_mnt_path_string(const std::string path);

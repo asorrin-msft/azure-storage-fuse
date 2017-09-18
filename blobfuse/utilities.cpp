@@ -162,6 +162,33 @@ int is_directory_empty(std::string container, std::string delimiter, std::string
 	return dirBlobFound ? 1 : 0;
 }
 
+int azs_getattr_set_from_file_status(shared_ptr<file_status> ptr, struct stat *stbuf)
+{
+	int file_state = ptr->state.load();
+	if (file_state == 0)
+	{
+		std::lock_guard<std::mutex> lock(ptr->cache_update_mutex);
+	}
+	file_state = ptr->state.load();
+	if (file_state == 5)
+	{
+		return -ENOENT;
+	}
+	
+	if (ptr->is_directory)
+	{
+		stbuf->st_mode = S_IFDIR | 0777;
+		stbuf->st_nlink = 2;
+		return 0;
+	}
+	else
+	{
+		stbuf->st_mode = S_IFREG | 0777; // Regular file (not a directory)
+		stbuf->st_nlink = 1;
+		stbuf->st_size = ptr->size.load();
+		return 0;
+	}
+}
 
 int azs_getattr(const char *path, struct stat *stbuf)
 {
@@ -179,36 +206,16 @@ int azs_getattr(const char *path, struct stat *stbuf)
 
 	std::string blobNameStr(&(path[1]));
 
-	
-
-/*
-	// Check and see if the file/directory exists locally (because it's being buffered.)  If so, skip the call to Storage.
-	std::string pathString(path);
-	const char * mntPath;
-	std::string mntPathString = prepend_mnt_path_string(pathString);
-	mntPath = mntPathString.c_str();
-
-	int res;
-	int acc = access(mntPathString.c_str(), F_OK);
-	if (AZS_PRINT)
 	{
-		fprintf(stdout, "accessing mntPath = %s returned %d\n", mntPathString.c_str(), acc);
-	}  
-	if (acc != -1 )
-	{
-		//(void) fi;
-		res = lstat(mntPathString.c_str(), stbuf);
-		if (AZS_PRINT)
+		std::lock_guard<std::mutex> lock(file_info_map_mutex);
+		auto info = file_info_map.find(blobNameStr);
+		if (info != file_info_map.end())
 		{
-			printf("LSTAT res = %d, errno = %d, ENOENT = %d\n", res, errno, ENOENT);
+			shared_ptr<struct file_status> ptr = info->second;
+			return azs_getattr_set_from_file_status(ptr, stbuf);
 		}
-		if (res == -1)
-			return -errno;
-		return 0;
 	}
-	*/
-
-
+	
 	errno = 0;
 	auto blob_property = azure_blob_client_wrapper->get_blob_property(str_options.containerName, blobNameStr);
 
@@ -219,10 +226,24 @@ int azs_getattr(const char *path, struct stat *stbuf)
 		{
 			fprintf(stdout, "Blob found!  Name = %s\n", path);
 		}
-		stbuf->st_mode = S_IFREG | 0777; // Regular file (not a directory)
-		stbuf->st_nlink = 1;
-		stbuf->st_size = blob_property.size;
-		return 0;
+		
+		file_info_map_mutex.lock(file_info_map_mutex);
+		auto info2 = file_info_map.find(blobNameStr);
+		if (info2 != file_info_map.end())
+		{
+			shared_ptr<struct file_status> ptr = info->second;
+			file_info_map_mutex.unlock();
+			return azs_getattr_set_from_file_status(ptr, stbuf);
+		}
+		else
+		{
+			file_info_map[blobNameStr] = std::make_shared<file_status>(1, blob_property.size, 0, false);
+			file_info_map_mutex.unlock();
+			stbuf->st_mode = S_IFREG | 0777; // Regular file (not a directory)
+			stbuf->st_nlink = 1;
+			stbuf->st_size = blob_property.size;
+			return 0;
+		}
 	}
 	else if (errno == 0 && !blob_property.valid())
 	{
@@ -246,9 +267,24 @@ int azs_getattr(const char *path, struct stat *stbuf)
 			{
 				fprintf(stdout, "Directory %s found!\n", blobNameStr.c_str());
 			}
-			stbuf->st_mode = S_IFDIR | 0777;
-			stbuf->st_nlink = 2;
-			return 0;
+			std::string blobNameStrCpy(&(path[1]));
+
+			file_info_map_mutex.lock();
+			auto info2 = file_info_map.find(blobNameStrCpy);
+			if (info2 != file_info_map.end())
+			{
+				shared_ptr<struct file_status> ptr = info->second;
+				file_info_map_mutex.unlock();
+				return azs_getattr_set_from_file_status(ptr, stbuf);
+			}
+			else
+			{
+				file_info_map[blobNameStrCpy] = std::make_shared<file_status>(0, 0, 0, false);
+				file_info_map_mutex.unlock();
+				stbuf->st_mode = S_IFDIR | 0777;
+				stbuf->st_nlink = 2;
+				return 0;
+			}
 		}
 		else
 		{

@@ -8,30 +8,76 @@ int azs_mkdir(const char *path, mode_t mode)
 	}
 
 	std::string pathstr(path);
+	std::string blobNameStr = pathstr.substr(1);
+	while (true)
 	{
-		std::lock_guard<std::mutex> lock(file_info_map_mutex);
-		if (file_info_map.find(pathstr.substr(1)) != file_info_map.end())
+		file_info_map_mutex.lock();
+		auto entry = file_info_map.find(blobNameStr);
+		if (entry == file_info_map.end())
 		{
-			return -EEXIST;
+			shared_ptr<struct file_status> ptr = std::make_shared<struct file_status>(0, 0, 0, true);
+			ptr->cache_update_mutex.lock();
+			file_info_map[blobNameStr] = ptr;
+			file_info_map_mutex.unlock();
+			
+			blobNameStr.push_back('/');
+			if (list_one_blob_hierarchical(str_options.containerName, "/", blobNameStr))
+			{
+				ensure_files_directory_exists(prepend_mnt_path_string(pathstr + "/placeholder"));
+				ptr->state.store(3);
+				ptr->cache_update_mutex.unlock();
+				return -EEXIST;
+			}
+			else
+			{
+				blobNameStr.insert(blobNameStr.size(), directorySignifier);
+
+				std::istringstream emptyDataStream("");
+				std::vector<std::pair<std::string, std::string>> metadata;
+				errno = 0;
+				azure_blob_client_wrapper->upload_block_blob_from_stream(str_options.containerName, blobNameStr, emptyDataStream, metadata);
+				// TODO: Use an access condition to ensure that we actually create the directory.  Fail if the we could not create the directory.
+				if (errno != 0)
+				{
+					int errno_val = errno;
+					ptr->state.store(5);
+					ptr->cache_update_mutex.unlock();
+					std::lock_guard lock(file_info_map_mutex);
+					file_info_map.erase(pathstr.substr(1));
+					
+					return 0 - map_errno(errno_val);
+				}
+				else
+				{
+					ensure_files_directory_exists(prepend_mnt_path_string(pathstr + "/placeholder"));
+					ptr->state.store(3);
+					ptr->cache_update_mutex.unlock();
+					return 0;
+				}
+			}
+		}
+		else
+		{
+			file_info_map_mutex.unlock();
+			int curstate = entry->second->state.load();
+			if (curstate == 3)
+			{
+				return -EEXIST;
+			}
+			std::lock_guard<std::mutex> lock(entry->second->cache_update_mutex);
+			if (curstate == 3)
+			{
+				return -EEXIST;
+			}
+			else
+			{
+				continue;
+			}
 		}
 	}
-	pathstr.insert(pathstr.size(), "/" + directorySignifier);
 
-	std::istringstream emptyDataStream("");
-
-	std::vector<std::pair<std::string, std::string>> metadata;
-	errno = 0;
-	azure_blob_client_wrapper->upload_block_blob_from_stream(str_options.containerName, pathstr.substr(1), emptyDataStream, metadata);
-	if (errno != 0)
-	{
-		return 0 - map_errno(errno);
-	}
-
-	std::string pathstrcpy(path);
-	std::lock_guard<std::mutex> lock(file_info_map_mutex);
-	file_info_map[pathstrcpy.substr(1)] = std::make_shared<file_status>(0, 0, 0, true);
-
-	return 0;
+//	return 0;
+}
 }
 
 /**
@@ -158,49 +204,136 @@ int azs_rmdir(const char *path)
 		fprintf(stdout, "azs_rmdir called with path = %s\n", path);
 	}
 
-	std::string pathStr(path);
-	if (pathStr.size() > 1)
+	
+	std::string pathstr(path);
+	std::string blobNameStr = pathstr.substr(1);
+
+	file_info_map_mutex.lock();
+	auto entry = file_info_map.find(blobNameStr);
+	if (entry == file_info_map.end())
 	{
-		pathStr.push_back('/');
+		shared_ptr<struct file_status> ptr = std::make_shared<struct file_status>(0, 0, 0, true);
+		ptr->cache_update_mutex.lock();
+		file_info_map[blobNameStr] = ptr;
+		file_info_map_mutex.unlock();
+		
+		blobNameStr.push_back('/');
+		int dirStatus = is_directory_empty(str_options.containerName, "/", blobNameStr)
+		if (dirStatus == 0)
+		{
+			ptr->state.store(5);
+			ptr->cache_update_mutex.unlock();
+			std::lock_guard lock(file_info_map_mutex);
+			file_info_map.erase(pathstr.substr(1));
+			return -ENOENT;
+		}
+		else if (dirStatus == 2)
+		{
+			ensure_files_directory_exists(prepend_mnt_path_string(pathstr + "/placeholder"));
+			ptr->state.store(3);
+			ptr->cache_update_mutex.unlock();
+			return -ENOTEMPTY;
+		}
+		else 
+		{
+			// dirStatus == 1
+			ptr->state.store(5);
+			std::string pathString(path);
+			const char * mntPath;
+			std::string mntPathString = prepend_mnt_path_string(pathString);
+			mntPath = mntPathString.c_str();
+			if (AZS_PRINT)
+			{
+				fprintf(stdout, "deleting directory %s\n", mntPath);
+			}
+			errno = 0;
+			int ret = remove(mntPath);
+			if (ret != 0)
+			{
+				int errno_val = errno;
+				ptr->state.store(3);
+				ptr->cache_update_mutex.unlock();
+				return -errno_val;
+			}
+			
+			blobNameStr.insert(blobNameStr.size(), directorySignifier);
+			errno = 0;
+			int ret = azure_blob_client_wrapper->delete_blob(str_options.containerName, blobNameStr);
+			if (ret != 0)
+			{
+				int errno_val = errno;
+				ptr->state.store(5);
+				ptr->cache_update_mutex.unlock();
+				std::lock_guard lock(file_info_map_mutex);
+				file_info_map.erase(pathstr.substr(1));
+					
+				return 0 - map_errno(errno_val);
+			}
+			
+			ptr->cache_update_mutex.unlock();
+			std::lock_guard lock(file_info_map_mutex);
+			file_info_map.erase(pathstr.substr(1));
+			return 0;			
+		}
+	}
+	else
+	{
+		file_info_map_mutex.unlock();
+		std::lock_guard<std::mutex> lock(entry->second->cache_update_mutex);
+		int state = entry.second->state->load();
+		if (state == 5)
+		{
+			return -ENOENT;
+		}
+		blobNameStr.push_back('/');
+		int dirStatus = is_directory_empty(str_options.containerName, "/", blobNameStr)
+		if (dirStatus == 2)
+		{
+			return -ENOTEMPTY;
+		}
+		else
+		{
+			// dirstatus == 1.  In this instance, dirStatus == 0 should be impossible.
+			std::string pathString(path);
+			const char * mntPath;
+			std::string mntPathString = prepend_mnt_path_string(pathString);
+			mntPath = mntPathString.c_str();
+			if (AZS_PRINT)
+			{
+				fprintf(stdout, "deleting directory %s\n", mntPath);
+			}
+			errno = 0;
+			int ret = remove(mntPath);
+			if (ret != 0)
+			{
+				int errno_val = errno;
+				ptr->state.store(3);
+				ptr->cache_update_mutex.unlock();
+				return -errno_val;
+			}
+			
+			blobNameStr.insert(blobNameStr.size(), directorySignifier);
+			errno = 0;
+			int ret = azure_blob_client_wrapper->delete_blob(str_options.containerName, blobNameStr);
+			if (ret != 0)
+			{
+				int errno_val = errno;
+				ptr->state.store(5);
+				ptr->cache_update_mutex.unlock();
+				std::lock_guard lock(file_info_map_mutex);
+				file_info_map.erase(pathstr.substr(1));
+					
+				return 0 - map_errno(errno_val);
+			}
+			
+			ptr->cache_update_mutex.unlock();
+			std::lock_guard lock(file_info_map_mutex);
+			file_info_map.erase(pathstr.substr(1));
+			return 0;
+		}
 	}
 
-	errno = 0;
-	int dirStatus = is_directory_empty(str_options.containerName, "/", pathStr.substr(1));
-	if (errno != 0)
-	{
-		return 0 - map_errno(errno);
-	}
-	if (dirStatus == 0)
-	{
-		return -ENOENT;
-	}
-	if (dirStatus == 2)
-	{
-		return -ENOTEMPTY;
-	}
-
-	std::string pathString(path);
-	const char * mntPath;
-	std::string mntPathString = prepend_mnt_path_string(pathString);
-	mntPath = mntPathString.c_str();
-	if (AZS_PRINT)
-	{
-		fprintf(stdout, "deleting directory %s\n", mntPath);
-	}
-	remove(mntPath);
-
-	pathStr.append(".directory");
-	int ret = azs_unlink(pathStr.c_str());
-	if (ret < 0)
-	{
-		return ret;
-	}
-
-	std::lock_guard<std::mutex> lock(file_info_map_mutex);
-	file_info_map.erase(pathString.substr(1));
-
-
-	return 0;
+//	return 0;
 
 
 

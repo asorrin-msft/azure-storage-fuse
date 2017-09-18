@@ -190,12 +190,13 @@ Directory APIs:
 				7. Return failure (the directory is not empty.)
 			- Case: There are no files in the directory, there is a .directory blob:
 				5. Set the state to "5".
-				6. Delete the .directory blob
-				7. Release the cache_update_mutex.
-				8. Grab the file_info_map_mutex.
-				9. Remove the newly-created item from the attr cache.
-				10. Release the file_info_map_mutex.
-				11. Return success.
+				6. Delete the directory from the file cache.
+				7. Delete the .directory blob
+				8. Release the cache_update_mutex.
+				9. Grab the file_info_map_mutex.
+				10. Remove the newly-created item from the attr cache.
+				11. Release the file_info_map_mutex.
+				12. Return success.
 	- Case: The entry does exist in the attr cache:
 		1. Release the file_info_map_mutex.  Grab the cache_update_mutex.
 		2. If the state is "5", fail, because someone else has deleted / is deleting the blob, or the blob doesn't exist.
@@ -204,11 +205,11 @@ Directory APIs:
 				4. Return failure (the directory is not empty.)
 			- Case: There are no files in the directory, but there is a .directory blob:
 				4. Set the state to "5".
-				5. Delete the .directory blob
-				6. Delete the directory in the file cache.
+				5. Delete the directory in the file cache.
+				6. Delete the .directory blob
 				7. Release the cache_update_mutex.
 				8. Grab the file_info_map_mutex.
-				9. Remove the newly-created item from the attr cache.
+				9. Remove the item from the attr cache.
 				10. Release the file_info_map_mutex.
 				11. Return success.
 				
@@ -234,17 +235,20 @@ File APIs:
 	1. Check whether or not the containing directory exists in the attr cache
 		- Case: The containing directory does exist in the attr cache.  Release the file_info_map_mutex, and:
 			2. If the state of the containing directory is not 3, acquire/release the cache_update_mutex.  If the state is now "5", start over from the beginning.
-			3. Create the file in the local file cache.
-			4. Check to see whether or not the file exists in the attr cache
+			3. Check to see whether or not the file exists in the attr cache
 				- Case: The file does not exist in the attr cache.  While still holding the file_info_map_mutex:
-					- 5. Create an entry for the file in the attr cache.  State is "3", size 0, open handles 1.
-					- 6. Release the file_info_map_mutex.
-					- 7. Return success.
+					- 4. Create an entry for the file.  State is "3", size 0, open handles 1.  Acquire the cache_update_mutex.  Add the shared_ptr to the cache.
+					- 5. Release the file_info_map_mutex.
+					- 6. Create the file in the local file cache.
+					- 7. Release the cache_update_mutex.
+					- 8. Return success.
 				- Case: The file does exist in the attr cache.  Release the file_info_map_mutex, and:
-					- 5. Grab the cache_update_mutex
+					- 4. Grab the cache_update_mutex
+					- 5. Create the file in the local file cache.
 					- 6. Update the size to "0"
 					- 7. Increment the open handles count
-					- 8. Return success.
+					- 8. Release the cache_update_mutex
+					- 9. Return success.
 		- Case: The containing directory does not exist in the attr cache.  While still holding the file_info_map_mutex:
 			2. Create the file_status struct for the directory.  Set the state to "0".  Acquire the cache_update_mutex.
 			3. Add the newly-created file_status struct to the file_info_map.
@@ -263,13 +267,18 @@ File APIs:
 					8. Release the cache_update_mutex.
 					9. Check to see whether or not the file exists in the attr cache.
 						- Case: The file does not exist in the attr cache.  While still holding the file_info_map_mutex:
-							10. Create an entry for the file in the attr cache.  State is "3", size 0, open handles 1.
+							10. Create an entry for the file.  State is "3", size 0, open handles 1.  Acquire the cache_update_mutex.  Add the shared_ptr to the cache.
 							11. Release the file_info_map_mutex.
+							12. Create the file in the local file cache.
+							13. Release the cache_update_mutex.
+							14. Return success.
 						- Case: The file does exist in the attr cache.  Release the file_info_map_mutex, and:
-							- 10. Grab the cache_update_mutex
-							- 11. Update the size to "0"
-							- 12. Increment the open handles count
-							- 13. Return success.
+							10. Grab the cache_update_mutex
+							11. Create the file in the local file cache.
+							12. Update the size to "0"
+							13. Increment the open handles count
+							14. Release the cache_update_mutex
+							155. Return success.
 
 				- If the local file is successfully created in the file cache, a corresponding entry is added to the attribute cache, with state "3", size 0, open handles 1.
 	TODO: Check what happens if the file/blob already exists in the attr cache in this case.
@@ -282,7 +291,7 @@ File APIs:
 		2. Add the newly-created file_status struct to the file_info_map.
 		3. Release the file_info_map_mutex.
 		4. Try to download the blob to the file cache.  If the download fails because the blob does not exist, set the state to "5", release the cache_update_mutex, remove the item from the attribute cache, and exit with a failure.
-		5. Set the state to "3", increment the open_handle_count.
+		5. Set the state to "3", increment the open_handle_count, update the size.
 		6. Release the cache_update_mutex acquired in step 1.
 	- Case: The file does exist in the attribute cache.  
 		1. Release the file_info_map_mutex.  Grab the cache_update_mutex for this file.
@@ -292,7 +301,7 @@ File APIs:
 				3. Set the state to "2"
 				4. Download the blob to the file cache
 				5. Set the state to "3"
-				6. Increment the open_handle_count.
+				6. Increment the open_handle_count, update the size.
 				7. Release the cache_update_mutex acquired in step 1.
 			- Case: State "3" (blob exists locally.)
 				3. Check the access time on the file in the local file cache and the current open_handle_count.  If the open_handle_count == 0 AND the local file is out of date, follow the steps above for the case when the state is "1" (set the state to "2", download the blob, set the state to "3", then continue to the next steps.)
