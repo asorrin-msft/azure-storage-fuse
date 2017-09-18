@@ -9,7 +9,9 @@ int azs_open(const char *path, struct fuse_file_info *fi)
 	}
 	std::string pathString(path);
 	std::string blobString = pathString.substr(1);
-	
+	std::string mntPathString = prepend_mnt_path_string(pathString);
+
+
 	while (true)
 	{
 		file_info_map_mutex.lock();
@@ -21,7 +23,6 @@ int azs_open(const char *path, struct fuse_file_info *fi)
 			file_info_map[blobString] = ptr;
 			file_info_map_mutex.unlock();
 
-			std::string mntPathString = prepend_mnt_path_string(pathString);
 			ensure_files_directory_exists(mntPathString);
 			std::ofstream filestream(mntPathString, std::ofstream::binary | std::ofstream::out);
 			errno = 0;
@@ -40,17 +41,17 @@ int azs_open(const char *path, struct fuse_file_info *fi)
 			ptr->open_handle_count++;
 			
 			struct stat buf;
-			int statret = stat(mntPath, &buf);
+			int statret = stat(mntPathString.c_str(), &buf);
 			ptr->size.store(buf.st_size);
 			ptr->cache_update_mutex.unlock();
 			
 			errno = 0;
 			int res;
 
-			res = open(mntPath, fi->flags);
+			res = open(mntPathString.c_str(), fi->flags);
 			if (AZS_PRINT)
 			{
-				printf("Accessing %s gives res = %d, errno = %d, ENOENT = %d\n", mntPath, res, errno, ENOENT);
+				printf("Accessing %s gives res = %d, errno = %d, ENOENT = %d\n", mntPathString.c_str(), res, errno, ENOENT);
 			}
 
 			if (res == -1)
@@ -78,7 +79,7 @@ int azs_open(const char *path, struct fuse_file_info *fi)
 				if (state == 3)
 				{
 					struct stat buf;
-					int statret = stat(mntPath, &buf);
+					int statret = stat(mntPathString.c_str(), &buf);
 					if (entry->second->open_handle_count.load() != 0 || ((statret == 0) && ((time(NULL) - buf.st_atime) < 12000)))
 					{
 						entry->second->open_handle_count++;
@@ -86,10 +87,10 @@ int azs_open(const char *path, struct fuse_file_info *fi)
 						errno = 0;
 						int res;
 
-						res = open(mntPath, fi->flags);
+						res = open(mntPathString.c_str(), fi->flags);
 						if (AZS_PRINT)
 						{
-							printf("Accessing %s gives res = %d, errno = %d, ENOENT = %d\n", mntPath, res, errno, ENOENT);
+							printf("Accessing %s gives res = %d, errno = %d, ENOENT = %d\n", mntPathString.c_str(), res, errno, ENOENT);
 						}
 
 						if (res == -1)
@@ -108,7 +109,6 @@ int azs_open(const char *path, struct fuse_file_info *fi)
 				{
 					entry->second->state.store(2);
 					
-					std::string mntPathString = prepend_mnt_path_string(pathString);
 					ensure_files_directory_exists(mntPathString);
 					std::ofstream filestream(mntPathString, std::ofstream::binary | std::ofstream::out);
 					errno = 0;
@@ -124,17 +124,17 @@ int azs_open(const char *path, struct fuse_file_info *fi)
 					entry->second->state.store(3);
 					entry->second->open_handle_count++;
 					struct stat buf;
-					int statret = stat(mntPath, &buf);
+					int statret = stat(mntPathString.c_str(), &buf);
 					entry->second->size.store(buf.st_size);
 					entry->second->cache_update_mutex.unlock();
 					
 					errno = 0;
 					int res;
 
-					res = open(mntPath, fi->flags);
+					res = open(mntPathString.c_str(), fi->flags);
 					if (AZS_PRINT)
 					{
-						printf("Accessing %s gives res = %d, errno = %d, ENOENT = %d\n", mntPath, res, errno, ENOENT);
+						printf("Accessing %s gives res = %d, errno = %d, ENOENT = %d\n", mntPathString.c_str(), res, errno, ENOENT);
 					}
 
 					if (res == -1)
@@ -190,16 +190,6 @@ int azs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse
 
 int azs_create_parent_dir_exists(std::string pathString, mode_t mode, struct fuse_file_info *fi)
 {
-	int state = ptr->state.load();
-	if (state != 3)
-	{
-		std::lock_guard<std::mutex> lock(ptr->cache_update_mutex);
-	}
-	state = ptr->state.load();
-	if (state == 5)
-	{
-		return 1;
-	}
 	
 	file_info_map_mutex.lock();
 	auto entry = file_info_map.find(pathString.substr(1));
@@ -287,29 +277,29 @@ int azs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 	{
 		if (last_slash_index == 0)
 		{
-			return azs_create_parent_dir_exists(pathString, mode, fi, nullptr);
+			return azs_create_parent_dir_exists(pathString, mode, fi);
 		}
 		
 		std::string dirString = pathString.substr(0, last_slash_index);
 		file_info_map_mutex.lock();
-		dirBlobNameStr = dirString.substr(1);
+		std::string dirBlobNameStr = dirString.substr(1);
 		auto entry = file_info_map.find(dirBlobNameStr);
 		if (entry != file_info_map.end())
 		{
 			file_info_map_mutex.unlock();
 			
-			int state = ptr->state.load();
+			int state = entry->second->state.load();
 			if (state != 3)
 			{
 				std::lock_guard<std::mutex> lock(entry->second->cache_update_mutex);
 			}
-			state = ptr->state.load();
+			state = entry->second->state.load();
 			if (state == 5)
 			{
 				continue;
 			}
 		
-			return azs_create_parent_dir_exists(pathString, mode, fi, entry->second);
+			return azs_create_parent_dir_exists(pathString, mode, fi);
 		}
 		
 		// Parent directory does not exist in the cache.
@@ -320,7 +310,7 @@ int azs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 		file_info_map_mutex.unlock();
 		
 		dirBlobNameStr.push_back('/');
-		if (!list_one_blob_hierarchical(str_options.containerName, "/", blobNameStr))
+		if (!list_one_blob_hierarchical(str_options.containerName, "/", dirBlobNameStr))
 		{
 			dirptr->state.store(5);
 			dirptr->cache_update_mutex.unlock();
@@ -334,7 +324,7 @@ int azs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 			ensure_files_directory_exists(mntPathString);
 			dirptr->state.store(3);
 			dirptr->cache_update_mutex.unlock();
-			return azs_create_parent_dir_exists(pathString, mode, fi, nullptr);
+			return azs_create_parent_dir_exists(pathString, mode, fi);
 		}
 	}
 }
@@ -380,7 +370,7 @@ int azs_write(const char *path, const char *buf, size_t size, off_t offset, stru
 		unsigned long long max_written = offset + res;
 		if (max_written > cur_size)
 		{
-			if (((struct fhwrapper *)fi->fh)->ptr->size.compare_exchange_strong(&cur_size, max_written)
+			if (((struct fhwrapper *)fi->fh)->ptr->size.compare_exchange_strong(cur_size, max_written))
 			{
 				break;
 			}

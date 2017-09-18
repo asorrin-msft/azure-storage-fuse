@@ -15,7 +15,7 @@ int azs_mkdir(const char *path, mode_t mode)
 		auto entry = file_info_map.find(blobNameStr);
 		if (entry == file_info_map.end())
 		{
-			shared_ptr<struct file_status> ptr = std::make_shared<struct file_status>(0, 0, 0, true);
+			std::shared_ptr<struct file_status> ptr = std::make_shared<struct file_status>(0, 0, 0, true);
 			ptr->cache_update_mutex.lock();
 			file_info_map[blobNameStr] = ptr;
 			file_info_map_mutex.unlock();
@@ -42,7 +42,7 @@ int azs_mkdir(const char *path, mode_t mode)
 					int errno_val = errno;
 					ptr->state.store(5);
 					ptr->cache_update_mutex.unlock();
-					std::lock_guard lock(file_info_map_mutex);
+					std::lock_guard<std::mutex> lock(file_info_map_mutex);
 					file_info_map.erase(pathstr.substr(1));
 					
 					return 0 - map_errno(errno_val);
@@ -77,7 +77,6 @@ int azs_mkdir(const char *path, mode_t mode)
 	}
 
 //	return 0;
-}
 }
 
 /**
@@ -212,18 +211,18 @@ int azs_rmdir(const char *path)
 	auto entry = file_info_map.find(blobNameStr);
 	if (entry == file_info_map.end())
 	{
-		shared_ptr<struct file_status> ptr = std::make_shared<struct file_status>(0, 0, 0, true);
+		std::shared_ptr<struct file_status> ptr = std::make_shared<struct file_status>(0, 0, 0, true);
 		ptr->cache_update_mutex.lock();
 		file_info_map[blobNameStr] = ptr;
 		file_info_map_mutex.unlock();
 		
 		blobNameStr.push_back('/');
-		int dirStatus = is_directory_empty(str_options.containerName, "/", blobNameStr)
+		int dirStatus = is_directory_empty(str_options.containerName, "/", blobNameStr);
 		if (dirStatus == 0)
 		{
 			ptr->state.store(5);
 			ptr->cache_update_mutex.unlock();
-			std::lock_guard lock(file_info_map_mutex);
+			std::lock_guard<std::mutex> lock(file_info_map_mutex);
 			file_info_map.erase(pathstr.substr(1));
 			return -ENOENT;
 		}
@@ -258,20 +257,20 @@ int azs_rmdir(const char *path)
 			
 			blobNameStr.insert(blobNameStr.size(), directorySignifier);
 			errno = 0;
-			int ret = azure_blob_client_wrapper->delete_blob(str_options.containerName, blobNameStr);
-			if (ret != 0)
+			azure_blob_client_wrapper->delete_blob(str_options.containerName, blobNameStr);
+			if (errno != 0)
 			{
 				int errno_val = errno;
 				ptr->state.store(5);
 				ptr->cache_update_mutex.unlock();
-				std::lock_guard lock(file_info_map_mutex);
+				std::lock_guard<std::mutex> lock(file_info_map_mutex);
 				file_info_map.erase(pathstr.substr(1));
 					
 				return 0 - map_errno(errno_val);
 			}
 			
 			ptr->cache_update_mutex.unlock();
-			std::lock_guard lock(file_info_map_mutex);
+			std::lock_guard<std::mutex> lock(file_info_map_mutex);
 			file_info_map.erase(pathstr.substr(1));
 			return 0;			
 		}
@@ -280,13 +279,13 @@ int azs_rmdir(const char *path)
 	{
 		file_info_map_mutex.unlock();
 		std::lock_guard<std::mutex> lock(entry->second->cache_update_mutex);
-		int state = entry.second->state->load();
+		int state = entry->second->state.load();
 		if (state == 5)
 		{
 			return -ENOENT;
 		}
 		blobNameStr.push_back('/');
-		int dirStatus = is_directory_empty(str_options.containerName, "/", blobNameStr)
+		int dirStatus = is_directory_empty(str_options.containerName, "/", blobNameStr);
 		if (dirStatus == 2)
 		{
 			return -ENOTEMPTY;
@@ -307,27 +306,27 @@ int azs_rmdir(const char *path)
 			if (ret != 0)
 			{
 				int errno_val = errno;
-				ptr->state.store(3);
-				ptr->cache_update_mutex.unlock();
+				entry->second->state.store(3);
+				entry->second->cache_update_mutex.unlock();
 				return -errno_val;
 			}
 			
 			blobNameStr.insert(blobNameStr.size(), directorySignifier);
 			errno = 0;
-			int ret = azure_blob_client_wrapper->delete_blob(str_options.containerName, blobNameStr);
-			if (ret != 0)
+			azure_blob_client_wrapper->delete_blob(str_options.containerName, blobNameStr);
+			if (errno != 0)
 			{
 				int errno_val = errno;
-				ptr->state.store(5);
-				ptr->cache_update_mutex.unlock();
-				std::lock_guard lock(file_info_map_mutex);
+				entry->second->state.store(5);
+				entry->second->cache_update_mutex.unlock();
+				std::lock_guard<std::mutex> lock(file_info_map_mutex);
 				file_info_map.erase(pathstr.substr(1));
 					
 				return 0 - map_errno(errno_val);
 			}
 			
-			ptr->cache_update_mutex.unlock();
-			std::lock_guard lock(file_info_map_mutex);
+			entry->second->cache_update_mutex.unlock();
+			std::lock_guard<std::mutex> lock(file_info_map_mutex);
 			file_info_map.erase(pathstr.substr(1));
 			return 0;
 		}

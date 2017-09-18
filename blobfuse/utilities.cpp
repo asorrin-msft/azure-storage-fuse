@@ -162,7 +162,7 @@ int is_directory_empty(std::string container, std::string delimiter, std::string
 	return dirBlobFound ? 1 : 0;
 }
 
-int azs_getattr_set_from_file_status(shared_ptr<file_status> ptr, struct stat *stbuf)
+int azs_getattr_set_from_file_status(std::shared_ptr<file_status> ptr, struct stat *stbuf)
 {
 	int file_state = ptr->state.load();
 	if (file_state == 0)
@@ -211,7 +211,7 @@ int azs_getattr(const char *path, struct stat *stbuf)
 		auto info = file_info_map.find(blobNameStr);
 		if (info != file_info_map.end())
 		{
-			shared_ptr<struct file_status> ptr = info->second;
+			std::shared_ptr<struct file_status> ptr = info->second;
 			return azs_getattr_set_from_file_status(ptr, stbuf);
 		}
 	}
@@ -227,11 +227,11 @@ int azs_getattr(const char *path, struct stat *stbuf)
 			fprintf(stdout, "Blob found!  Name = %s\n", path);
 		}
 		
-		file_info_map_mutex.lock(file_info_map_mutex);
-		auto info2 = file_info_map.find(blobNameStr);
-		if (info2 != file_info_map.end())
+		file_info_map_mutex.lock();
+		auto info = file_info_map.find(blobNameStr);
+		if (info != file_info_map.end())
 		{
-			shared_ptr<struct file_status> ptr = info->second;
+			std::shared_ptr<struct file_status> ptr = info->second;
 			file_info_map_mutex.unlock();
 			return azs_getattr_set_from_file_status(ptr, stbuf);
 		}
@@ -270,10 +270,10 @@ int azs_getattr(const char *path, struct stat *stbuf)
 			std::string blobNameStrCpy(&(path[1]));
 
 			file_info_map_mutex.lock();
-			auto info2 = file_info_map.find(blobNameStrCpy);
-			if (info2 != file_info_map.end())
+			auto info = file_info_map.find(blobNameStrCpy);
+			if (info != file_info_map.end())
 			{
-				shared_ptr<struct file_status> ptr = info->second;
+				std::shared_ptr<struct file_status> ptr = info->second;
 				file_info_map_mutex.unlock();
 				return azs_getattr_set_from_file_status(ptr, stbuf);
 			}
