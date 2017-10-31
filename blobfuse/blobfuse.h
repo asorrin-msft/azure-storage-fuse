@@ -66,7 +66,6 @@ extern struct str_options str_options;
 
 extern int file_cache_timeout_in_seconds;
 
-
 // This is used to make all the calls to Storage
 // The C++ lite client does not store state, other than connection info, so we can use it between calls without issue.
 extern std::shared_ptr<blob_client_wrapper> azure_blob_client_wrapper;
@@ -75,10 +74,11 @@ extern std::shared_ptr<blob_client_wrapper> azure_blob_client_wrapper;
 extern std::map<int, int> error_mapping;
 
 // String that signifies that this blob represents a directory.
-// This string should be appended to the name of the directory.  THe resultant string should be the name of a zero-length blob; this represents the directory on the service.
+// This string should be appended to the name of the directory.  The resultant string should be the name of a zero-length blob; this represents the directory on the service.
 extern const std::string directorySignifier;
 
 // Helper function to map an HTTP error to an errno.
+// Should be called on any errno returned from the Azure Storage cpp lite lib.
 int map_errno(int error);
 
 // Helper function to prepend the 'tmpPath' to the input path.
@@ -86,7 +86,7 @@ int map_errno(int error);
 std::string prepend_mnt_path_string(const std::string path);
 
 // Helper function to create all directories in the path if they don't already exist.
-int ensure_files_directory_exists(const std::string file_path);
+int ensure_files_directory_exists_in_cache(const std::string file_path);
 
 // Greedily list all blobs using the input params.
 std::vector<list_blobs_hierarchical_item> list_all_blobs_hierarchical(std::string container, std::string delimiter, std::string prefix);
@@ -153,7 +153,7 @@ int azs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offse
 
 /**
  * Open an item (a file) for writing or reading.
- * At the moment, we cache the file locally in its entirety to the SSD before uplaoding to blob storage.
+ * At the moment, we cache the file locally in its entirety to the SSD before uploading to blob storage.
  * TODO: Implement in-memory caching.
  * TODO: Implement block-level buffering.
  * TODO: If opening for reading, cache the file locally.
@@ -235,7 +235,7 @@ int azs_unlink(const char *path);
  * Remove a directory.
  *
  * Delete the directory locally, and the ".directory" blob in Storage.
- * Fail is the directory is not empty.
+ * Fail if the directory is not empty.
  *
  * @param  path Path to the directory to remove.
  * @return      TODO: Error codes.

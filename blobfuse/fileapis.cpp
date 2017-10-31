@@ -87,11 +87,11 @@ int azs_open(const char *path, struct fuse_file_info *fi)
     // If the file/blob being opened does not exist in the cache, or the version in the cache is too old, we need to download / refresh the data from the service.
     struct stat buf;
     int statret = stat(mntPath, &buf);
-    if ((statret != 0) || ((time(NULL) - buf.st_atime) > file_cache_timeout_in_seconds))  // TODO: Consider using "modified time" here, rather than "access time".
+    if ((statret != 0) || ((time(NULL) - buf.st_mtime) > file_cache_timeout_in_seconds))  // TODO: Consider using "modified time" here, rather than "access time".
     {
         remove(mntPath);
 
-        if(0 != ensure_files_directory_exists(mntPathString))
+        if(0 != ensure_files_directory_exists_in_cache(mntPathString))
         {
             fprintf(stderr, "Failed to create file or direcotry on cache directory: %s, errno = %d.\n", mntPathString.c_str(),  errno);
             return -1;
@@ -199,6 +199,8 @@ int azs_open(const char *path, struct fuse_file_info *fi)
     return 0;
 }
 
+// We don't use the 'path' parameter
+#pragma GCC diagnostic ignored "-Wunused-parameter"
 /**
  * Read data from the file (the blob) into the input buffer
  * @param  path   Path of the file (blob) to read from
@@ -210,30 +212,16 @@ int azs_open(const char *path, struct fuse_file_info *fi)
  */
 int azs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
 {
-    std::string pathString(path);
-    const char * mntPath;
-    std::string mntPathString = prepend_mnt_path_string(pathString);
-    mntPath = mntPathString.c_str();
-    int fd;
-    int res;
+    int fd = ((struct fhwrapper *)fi->fh)->fh;
 
-    (void) fi;
-    if (fi == NULL)
-        fd = open(mntPath, O_RDONLY);
-    else
-        fd = ((struct fhwrapper *)fi->fh)->fh;
-
-    if (fd == -1)
-        return -errno;
-
-    res = pread(fd, buf, size, offset);
+    errno = 0;
+    int res = pread(fd, buf, size, offset);
     if (res == -1)
         res = -errno;
 
-    if (fi == NULL)
-        close(fd);
     return res;
 }
+#pragma GCC diagnostic pop
 
 // Note that in FUSE, create is not the same as open with specific flags (the way it is in Linux)
 // See the FUSE docs on these methods for more details.
@@ -253,7 +241,7 @@ int azs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
     mntPath = mntPathString.c_str();
     int res;
 
-    int mntPathLength = strlen(mntPath);
+    int mntPathLength = mntPathString.size();
     char *mntPathCopy = (char *)malloc(mntPathLength + 1);
     memcpy(mntPathCopy, mntPath, mntPathLength);
     mntPathCopy[mntPathLength] = 0;
@@ -277,7 +265,9 @@ int azs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
         cur = cur + 1;
         cur = strchr(cur, '/');
     }
-    res = open(mntPath, fi->flags, mode);
+
+    // FUSE will set the O_CREAT and O_WRONLY flags, but not O_EXCL, which is generally assumed for 'create' semantics.
+    res = open(mntPath, fi->flags | O_EXCL, mode);
     if (AZS_PRINT)
     {
         fprintf(stdout, "mntPath = %s, result = %d\n", mntPath, res);
@@ -296,6 +286,7 @@ int azs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
     return 0;
 }
 
+#pragma GCC diagnostic ignored "-Wunused-parameter"
 /**
  * Write data to the file.
  *
@@ -311,30 +302,17 @@ int azs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
  */
 int azs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
 {
-    std::string pathString(path);
-    const char * mntPath;
-    std::string mntPathString = prepend_mnt_path_string(pathString);
-    mntPath = mntPathString.c_str();
-    int fd;
-    int res;
+    int fd = ((struct fhwrapper *)fi->fh)->fh;
 
-    (void) fi;
-    if (fi == NULL)
-        fd = open(mntPath, O_WRONLY);
-    else
-        fd = ((struct fhwrapper *)fi->fh)->fh;
-
-    if (fd == -1)
-        return -errno;
-
-    res = pwrite(fd, buf, size, offset);
+    errno = 0;
+    int res = pwrite(fd, buf, size, offset);
     if (res == -1)
         res = -errno;
 
-    if (fi == NULL)
-        close(fd);
     return res;
 }
+
+#pragma GCC diagnostic pop
 
 int azs_flush(const char *path, struct fuse_file_info *fi)
 {
@@ -652,7 +630,7 @@ int azs_rename_single_file(const char *src, const char *dst)
             fprintf(stdout, "Src file found in local cache.\n");
         }
         // The file exists in the local cache.  Call rename() on it (note this will preserve existing handles.)
-        ensure_files_directory_exists(dstMntPath);
+        ensure_files_directory_exists_in_cache(dstMntPath);
         errno = 0;
         int renameret = rename(srcMntPath, dstMntPath);
         if (AZS_PRINT)

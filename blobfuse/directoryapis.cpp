@@ -49,6 +49,8 @@ int azs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t, stru
 
     std::vector<std::string> local_list_results;
 
+    // Scan for any files that exist in the local cache.
+    // It is possible that there are files in the cache that aren't on the service - if a file has been opened but not yet uplaoded, for example.
     std::string mntPathString = prepend_mnt_path_string(pathStr);
     DIR *dir_stream = opendir(mntPathString.c_str());
     if (dir_stream != NULL)
@@ -91,8 +93,6 @@ int azs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t, stru
         }
     }
 
-
-
     errno = 0;
     std::vector<list_blobs_hierarchical_item> listResults = list_all_blobs_hierarchical(str_options.containerName, "/", pathStr.substr(1));
     if (errno != 0)
@@ -107,12 +107,11 @@ int azs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t, stru
     filler(buf, ".", NULL, 0);
     filler(buf, "..", NULL, 0);
 
-    size_t i = 0;
     if (AZS_PRINT)
     {
         fprintf(stdout, "result count = %lu\n", listResults.size());
     }
-    for (; i < listResults.size(); i++)
+    for (size_t i = 0; i < listResults.size(); i++)
     {
         int fillerResult;
         // We need to parse out just the trailing part of the path name.
@@ -129,6 +128,7 @@ int azs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t, stru
                 prev_token_str = listResults[i].name.substr(pathStr.size() - 1);
             }
 
+            // Any files that exist both on the service and in the local cache will be in both lists, we need to de-dup them.
             // TODO: order or hash the list to improve perf
             if (std::find(local_list_results.begin(), local_list_results.end(), prev_token_str) == local_list_results.end())
             {
@@ -146,7 +146,6 @@ int azs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t, stru
                             fprintf(stdout, "blob result = %s, fillerResult = %d\n", prev_token_str.c_str(), fillerResult);
                         }
                     }
-
                 }
                 else
                 {

@@ -25,7 +25,12 @@ const struct fuse_opt option_spec[] =
 };
 
 std::shared_ptr<blob_client_wrapper> azure_blob_client_wrapper;
+
+// Currently, the cpp lite lib puts the HTTP status code in errno.
+// This mapping tries to convert the HTTP status code to a standard Linux errno.
+// TODO: Ensure that we map any potential HTTP status codes we might receive.
 std::map<int, int> error_mapping = {{404, ENOENT}, {403, EACCES}, {1600, ENOENT}};
+
 const std::string directorySignifier = ".directory";
 
 static struct fuse_operations azs_blob_operations;
@@ -131,7 +136,7 @@ void *azs_init(struct fuse_conn_info * conn)
 // TODO: print FUSE usage as well
 void print_usage()
 {
-    fprintf(stdout, "Usage: blobfuse <mount-folder> --config-file=<config-file> --tmp-path=<temp-path> [--use-https=false] [-file-cache-timeout-in-seconds=120]\n");
+    fprintf(stdout, "Usage: blobfuse <mount-folder> --config-file=<config-file> --tmp-path=<temp-path> [--use-https=false] [--file-cache-timeout-in-seconds=120]\n");
 }
 
 int main(int argc, char *argv[])
@@ -219,7 +224,7 @@ int main(int argc, char *argv[])
     }
 
     fuse_opt_add_arg(&args, "-omax_read=4194304");
-    if(0 != ensure_files_directory_exists(prepend_mnt_path_string("/placeholder")))
+    if(0 != ensure_files_directory_exists_in_cache(prepend_mnt_path_string("/placeholder")))
     {
         fprintf(stderr, "Failed to create direcotry on cache directory: %s, errno = %d.\n", prepend_mnt_path_string("/placeholder").c_str(),  errno);
         return 1;
@@ -235,7 +240,7 @@ int main(int argc, char *argv[])
         file_cache_timeout_in_seconds = 120;
     }
 
-    // FUSE contains a feature whereit automatically implements 'soft' delete if one process has a file open when another calls unlink().
+    // FUSE contains a feature where it automatically implements 'soft' delete if one process has a file open when another calls unlink().
     // This feature causes us a bunch of problems, so we use "-ohard_remove" to disable it, and track the needed 'soft delete' functionality on our own.
     fuse_opt_add_arg(&args, "-ohard_remove");
 

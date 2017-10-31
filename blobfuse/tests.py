@@ -15,7 +15,7 @@ import multiprocessing
 
 class TestFuse(unittest.TestCase):
     blobdir = "/path/to/mount" # Path to the mounted container
-    localdir = "/mnt/tmp2" # A local temp directory, not the same one used by blobfuse.
+    localdir = "/mnt/tmp" # A local temp directory, not the same one used by blobfuse.
     src = ""
     dest = ""
     blobstage = ""

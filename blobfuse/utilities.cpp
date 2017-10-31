@@ -19,7 +19,7 @@ std::string prepend_mnt_path_string(const std::string path)
     return str_options.tmpPath + "/root" + path;
 }
 
-int ensure_files_directory_exists(const std::string file_path)
+int ensure_files_directory_exists_in_cache(const std::string file_path)
 {
     char *pp;
     char *slash;
@@ -52,14 +52,9 @@ int ensure_files_directory_exists(const std::string file_path)
 
 std::vector<list_blobs_hierarchical_item> list_all_blobs_hierarchical(std::string container, std::string delimiter, std::string prefix)
 {
-    static const int maxFailCount = 20;
     std::vector<list_blobs_hierarchical_item> results;
-
     std::string continuation;
-
     std::string prior;
-    bool success = false;
-    int failcount = 0;
     do
     {
         if (AZS_PRINT)
@@ -71,8 +66,6 @@ std::vector<list_blobs_hierarchical_item> list_all_blobs_hierarchical(std::strin
         list_blobs_hierarchical_response response = azure_blob_client_wrapper->list_blobs_hierarchical(container, delimiter, continuation, prefix);
         if (errno == 0)
         {
-            success = true;
-            failcount = 0;
             if (AZS_PRINT)
             {
                 fprintf(stdout, "results count = %lu\n", response.blobs.size());
@@ -92,16 +85,11 @@ std::vector<list_blobs_hierarchical_item> list_all_blobs_hierarchical(std::strin
         }
         else
         {
-            failcount++;
-            success = false;
-            if (AZS_PRINT)
-            {
-                fprintf(stdout, "list_blobs_hierarchical failed %d time with errno = %d\n", failcount, errno);
-            }
-
+            // errno will be set by list_blobs_hierarchial
+            return results;
         }
     }
-    while (((continuation.size() > 0) || !success) && (failcount < maxFailCount));
+    while (continuation.size() > 0);
 
     return results;
 }
@@ -117,8 +105,6 @@ std::vector<list_blobs_hierarchical_item> list_all_blobs_hierarchical(std::strin
 int is_directory_empty(std::string container, std::string delimiter, std::string prefix)
 {
     std::string continuation;
-    bool success = false;
-    int failcount = 0;
     bool dirBlobFound = false;
     do
     {
@@ -126,8 +112,6 @@ int is_directory_empty(std::string container, std::string delimiter, std::string
         list_blobs_hierarchical_response response = azure_blob_client_wrapper->list_blobs_hierarchical(container, delimiter, continuation, prefix);
         if (errno == 0)
         {
-            success = true;
-            failcount = 0;
             continuation = response.next_marker;
             if (response.blobs.size() > 1)
             {
@@ -150,11 +134,11 @@ int is_directory_empty(std::string container, std::string delimiter, std::string
         }
         else
         {
-            success = false;
-            failcount++; //TODO: use to set errno.
+            // errno will be set by list_blobs_hierarchial
+            return -1;
         }
     }
-    while ((continuation.size() > 0) && !success && (failcount < 20));
+    while (continuation.size() > 0);
 
     return dirBlobFound ? D_EMPTY : D_NOTEXIST;
 }
@@ -279,7 +263,8 @@ void azs_destroy(void * /*private_data*/)
     cstr[rootPath.size()] = 0;
 
     errno = 0;
-    nftw(rootPath.c_str(), rm, 20, FTW_DEPTH);
+    // FTW_DEPTH instructs FTW to do a post-order traversal (children of a directory before the actual directory.)
+    nftw(rootPath.c_str(), rm, 20, FTW_DEPTH); 
     free(cstr);
 }
 
@@ -342,7 +327,7 @@ int azs_rename_directory(const char *src, const char *dst)
     }
     std::vector<std::string> local_list_results;
 
-    ensure_files_directory_exists(prepend_mnt_path_string(dstPathStr + "placeholder"));
+    ensure_files_directory_exists_in_cache(prepend_mnt_path_string(dstPathStr + "placeholder"));
     std::string mntPathString = prepend_mnt_path_string(srcPathStr);
     DIR *dir_stream = opendir(mntPathString.c_str());
     if (dir_stream != NULL)
