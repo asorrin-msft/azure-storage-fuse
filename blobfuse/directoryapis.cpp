@@ -119,21 +119,6 @@ int azs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t, stru
         int len = listResults[i].name.size();
         if (len > 0)
         {
-            /*            char *nameCopy = (char *)malloc(len + 1);
-                        memcpy(nameCopy, listResults[i].name.c_str(), len);
-                        nameCopy[len] = 0;
-
-                        char *lasts = NULL;
-                        char *token = strtok_r(nameCopy, "/", &lasts);
-                        char *prevtoken = NULL;
-
-                        while (token)
-                        {
-                            prevtoken = token;
-                            token = strtok_r(NULL, "/", &lasts);
-                        }
-
-                        std::string prev_token_str(prevtoken); */
             std::string prev_token_str;
             if (listResults[i].name.back() == '/')
             {
@@ -179,18 +164,13 @@ int azs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t, stru
 
                 }
             }
-
-
-//            free(nameCopy);
         }
-
     }
     if (AZS_PRINT)
     {
         fprintf(stdout, "Done with readdir\n");
     }
     return 0;
-
 }
 
 int azs_rmdir(const char *path)
@@ -234,19 +214,15 @@ int azs_rmdir(const char *path)
     pathStr.append(".directory");
     azs_unlink(pathStr.c_str());
 
-
     return 0;
-
 }
 
 int azs_statfs(const char *path, struct statvfs *stbuf)
 {
-
     std::string pathString(path);
     const char * mntPath;
     std::string mntPathString = prepend_mnt_path_string(pathString);
     mntPath = mntPathString.c_str();
-
 
     int res = statvfs(mntPath, stbuf);
     if (res == -1)
