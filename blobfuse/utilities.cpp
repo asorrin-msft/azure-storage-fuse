@@ -52,9 +52,14 @@ int ensure_files_directory_exists_in_cache(const std::string file_path)
 
 std::vector<list_blobs_hierarchical_item> list_all_blobs_hierarchical(std::string container, std::string delimiter, std::string prefix)
 {
+    static const int maxFailCount = 20;
     std::vector<list_blobs_hierarchical_item> results;
+
     std::string continuation;
+
     std::string prior;
+    bool success = false;
+    int failcount = 0;
     do
     {
         if (AZS_PRINT)
@@ -66,6 +71,8 @@ std::vector<list_blobs_hierarchical_item> list_all_blobs_hierarchical(std::strin
         list_blobs_hierarchical_response response = azure_blob_client_wrapper->list_blobs_hierarchical(container, delimiter, continuation, prefix);
         if (errno == 0)
         {
+            success = true;
+            failcount = 0;
             if (AZS_PRINT)
             {
                 fprintf(stdout, "results count = %lu\n", response.blobs.size());
@@ -85,12 +92,17 @@ std::vector<list_blobs_hierarchical_item> list_all_blobs_hierarchical(std::strin
         }
         else
         {
-            // errno will be set by list_blobs_hierarchial
-            return results;
-        }
-    }
-    while (continuation.size() > 0);
+            failcount++;
+            success = false;
+            if (AZS_PRINT)
+            {
+                fprintf(stdout, "list_blobs_hierarchical failed %d time with errno = %d\n", failcount, errno);
+            }
 
+        }
+    } while (((continuation.size() > 0) || !success) && (failcount < maxFailCount));
+
+    // errno will be set by list_blobs_hierarchial if the last call failed and we're out of retries.
     return results;
 }
 
@@ -105,6 +117,8 @@ std::vector<list_blobs_hierarchical_item> list_all_blobs_hierarchical(std::strin
 int is_directory_empty(std::string container, std::string delimiter, std::string prefix)
 {
     std::string continuation;
+    bool success = false;
+    int failcount = 0;
     bool dirBlobFound = false;
     do
     {
@@ -112,6 +126,8 @@ int is_directory_empty(std::string container, std::string delimiter, std::string
         list_blobs_hierarchical_response response = azure_blob_client_wrapper->list_blobs_hierarchical(container, delimiter, continuation, prefix);
         if (errno == 0)
         {
+            success = true;
+            failcount = 0;
             continuation = response.next_marker;
             if (response.blobs.size() > 1)
             {
@@ -120,9 +136,9 @@ int is_directory_empty(std::string container, std::string delimiter, std::string
             if (response.blobs.size() == 1)
             {
                 if ((!dirBlobFound) &&
-                        (!response.blobs[0].is_directory) &&
-                        (response.blobs[0].name.size() > directorySignifier.size()) &&
-                        (0 == response.blobs[0].name.compare(response.blobs[0].name.size() - directorySignifier.size(), directorySignifier.size(), directorySignifier)))
+                    (!response.blobs[0].is_directory) &&
+                    (response.blobs[0].name.size() > directorySignifier.size()) &&
+                    (0 == response.blobs[0].name.compare(response.blobs[0].name.size() - directorySignifier.size(), directorySignifier.size(), directorySignifier)))
                 {
                     dirBlobFound = true;
                 }
@@ -134,12 +150,17 @@ int is_directory_empty(std::string container, std::string delimiter, std::string
         }
         else
         {
-            // errno will be set by list_blobs_hierarchial
-            return -1;
+            success = false;
+            failcount++; //TODO: use to set errno.
         }
-    }
-    while (continuation.size() > 0);
+    } while ((continuation.size() > 0) && !success && (failcount < 20));
 
+    if (!success)
+    {
+    // errno will be set by list_blobs_hierarchial if the last call failed and we're out of retries.
+        return -1;
+    }
+    
     return dirBlobFound ? D_EMPTY : D_NOTEXIST;
 }
 
