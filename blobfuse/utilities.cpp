@@ -201,15 +201,22 @@ int azs_getattr(const char *path, struct stat *stbuf)
     }
     if (acc != -1 )
     {
-        //(void) fi;
-        res = lstat(mntPathString.c_str(), stbuf);
-        if (AZS_PRINT)
+        // Acquire the lock and try again, to prevent races with deleting the cache
+        auto fmutex = file_lock_map::get_instance()->get_mutex(path);
+        std::lock_guard<std::mutex> lock(*fmutex);
+
+        acc = access(mntPathString.c_str(), F_OK);
+        if (acc != -1 )
         {
-            printf("LSTAT res = %d, errno = %d, ENOENT = %d\n", res, errno, ENOENT);
+            res = lstat(mntPathString.c_str(), stbuf);
+            if (AZS_PRINT)
+            {
+                printf("LSTAT res = %d, errno = %d, ENOENT = %d\n", res, errno, ENOENT);
+            }
+            if (res == -1)
+                return -errno;
+            return 0;
         }
-        if (res == -1)
-            return -errno;
-        return 0;
     }
 
     // It's not in the local cache.  Check to see if it's a blob on the service:
@@ -397,6 +404,7 @@ int azs_rename_directory(const char *src, const char *dst)
             dir_ent = readdir(dir_stream);
         }
     }
+    closedir(dir_stream);
 
     errno = 0;
     std::vector<list_blobs_hierarchical_item> listResults = list_all_blobs_hierarchical(str_options.containerName, "/", srcPathStr.substr(1));

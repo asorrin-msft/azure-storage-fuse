@@ -8,11 +8,13 @@ struct options
     const char *config_file; // Connection to Azure Storage information (account name, account key, etc)
     const char *use_https; // True if https should be used (defaults to false)
     const char *file_cache_timeout_in_seconds; // Timeout for the file cache (defaults to 120 seconds)
+    const char *bulk_transfer_mode; // If set, delete the cached file on file close
 };
 
 struct options options;
 struct str_options str_options;
 int file_cache_timeout_in_seconds;
+bool bulk_transfer_mode;
 
 #define OPTION(t, p) { t, offsetof(struct options, p), 1 }
 const struct fuse_opt option_spec[] =
@@ -21,11 +23,12 @@ const struct fuse_opt option_spec[] =
     OPTION("--config-file=%s", config_file),
     OPTION("--use-https=%s", use_https),
     OPTION("--file-cache-timeout-in-seconds=%s", file_cache_timeout_in_seconds),
+    OPTION("--bulk-transfer-mode=%s", bulk_transfer_mode),
     FUSE_OPT_END
 };
 
 std::shared_ptr<blob_client_wrapper> azure_blob_client_wrapper;
-
+    
 // Currently, the cpp lite lib puts the HTTP status code in errno.
 // This mapping tries to convert the HTTP status code to a standard Linux errno.
 // TODO: Ensure that we map any potential HTTP status codes we might receive.
@@ -136,7 +139,7 @@ void *azs_init(struct fuse_conn_info * conn)
 // TODO: print FUSE usage as well
 void print_usage()
 {
-    fprintf(stdout, "Usage: blobfuse <mount-folder> --config-file=<config-file> --tmp-path=<temp-path> [--use-https=false] [--file-cache-timeout-in-seconds=120]\n");
+    fprintf(stdout, "Usage: blobfuse <mount-folder> --config-file=<config-file> --tmp-path=<temp-path> [--use-https=false] [--file-cache-timeout-in-seconds=120] [--bulk-transfer-mode]\n");
     fprintf(stdout, "Please see https://github.com/Azure/azure-storage-fuse for installation and configuration instructions.\n");
 }
 
@@ -208,6 +211,15 @@ int main(int argc, char *argv[])
         }
     }
 
+    if (options.bulk_transfer_mode != NULL)
+    {
+        std::string bulk_transfer_mode_opt(options.bulk_transfer_mode);
+        if (bulk_transfer_mode_opt == "true")
+        {
+            bulk_transfer_mode = true;
+            fprintf(stdout, "Bulk transfer mode on.\n");
+        }
+    }
 
     azure_blob_client_wrapper = std::make_shared<blob_client_wrapper>(blob_client_wrapper::blob_client_wrapper_init(str_options.accountName, str_options.accountKey, defaultMaxConcurrency, use_https));
     if(errno != 0)

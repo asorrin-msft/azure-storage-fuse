@@ -1,20 +1,7 @@
 #include "blobfuse.h"
 #include <sys/file.h>
 
-// We use two different locking schemes to protect files / blobs against data corruption and data loss scenarios.
-// The first is an in-memory std::mutex, the second is flock (Linux).  Each file path gets its own mutex and flock lock.
-// The in-memory mutex should only be held while control is in a method that is directly communicating with Azure Storage.
-// The flock lock should be held continuously, from the time that the file is opened until the time that the file is closed.  It should also be held during blob download and upload.
-// Blob download should hold the flock lock in exclusive mode.  Read/write operations should hold it in shared mode.
-// Explanations for why we lock in various places are in-line.
-
-// This class contains mutexes that we use to lock file paths during blob upload / download / delete.
-// Each blob / file path gets its own mutex.
-// This mutex should never be held when control is not in an open(), flush(), or unlink() method.
-class file_lock_map
-{
-public:
-    static file_lock_map* get_instance()
+    file_lock_map* file_lock_map::get_instance()
     {
         if(nullptr == _instance.get())
         {
@@ -27,7 +14,7 @@ public:
         return _instance.get();
     }
 
-    std::shared_ptr<std::mutex> get_mutex(std::string path)
+    std::shared_ptr<std::mutex> file_lock_map::get_mutex(std::string path)
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         auto iter = m_lock_map.find(path);
@@ -43,23 +30,11 @@ public:
         }
     }
 
-    std::shared_ptr<std::mutex> get_mutex(const char* path)
+    std::shared_ptr<std::mutex> file_lock_map::get_mutex(const char* path)
     {
         std::string spath(path);
         return get_mutex(spath);
     }
-
-protected:
-    file_lock_map()
-    {
-    }
-
-private:
-    static std::shared_ptr<file_lock_map> _instance;
-    static std::mutex s_mutex;
-    std::mutex m_mutex;
-    std::map<std::string, std::shared_ptr<std::mutex>> m_lock_map;
-};
 
 std::shared_ptr<file_lock_map> file_lock_map::_instance;
 std::mutex file_lock_map::s_mutex;
@@ -240,31 +215,7 @@ int azs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
     std::string mntPathString = prepend_mnt_path_string(pathString);
     mntPath = mntPathString.c_str();
     int res;
-
-    int mntPathLength = mntPathString.size();
-    char *mntPathCopy = (char *)malloc(mntPathLength + 1);
-    memcpy(mntPathCopy, mntPath, mntPathLength);
-    mntPathCopy[mntPathLength] = 0;
-
-    // Have to create any directories that don't already exist in the path to the file.
-    // // TODO: Change this to use the 'ensure_directory'exists' method.
-    char *cur = mntPathCopy + 1;
-    cur = strchr(cur, '/');
-    while (cur)
-    {
-        *cur = 0;
-        if (AZS_PRINT)
-        {
-            fprintf(stdout, "Now validating and possibly creating %s\n", mntPathCopy);
-        }
-        if (access(mntPathCopy, F_OK) != 0)
-        {
-            mkdir(mntPathCopy, 0770);
-        }
-        *cur = '/';
-        cur = cur + 1;
-        cur = strchr(cur, '/');
-    }
+    ensure_files_directory_exists_in_cache(mntPathString);
 
     // FUSE will set the O_CREAT and O_WRONLY flags, but not O_EXCL, which is generally assumed for 'create' semantics.
     res = open(mntPath, fi->flags | O_EXCL, mode);
@@ -438,6 +389,36 @@ int azs_release(const char *path, struct fuse_file_info * fi)
         // Note that this will release the shared lock acquired in the corresponding open() call (the one that gave us this file descriptor, in the fuse_file_info).
         // It will not release any locks acquired from other calls to open(), in this process or in others.
         flock(((struct fhwrapper *)fi->fh)->fh, LOCK_UN);
+        if (bulk_transfer_mode)
+        {
+            if (AZS_PRINT)
+            {
+                fprintf(stdout, "Bulk transfer mode is on; attempting to acquire the lock on and remove %s\n", path);
+            }
+            auto fmutex = file_lock_map::get_instance()->get_mutex(path);
+            std::lock_guard<std::mutex> lock(*fmutex);
+            int flockres = flock((((struct fhwrapper *)fi->fh)->fh), LOCK_EX|LOCK_NB);
+            if (flockres == 0)
+            {
+                if (AZS_PRINT)
+                {
+                    fprintf(stdout, "Lock acquired, now removing %s\n", path);
+                }
+                int ret = remove(mntPath);
+                if (AZS_PRINT)
+                {
+                    fprintf(stdout, "ret = %d, errno = %d\n", ret, errno);
+                }
+                flock((((struct fhwrapper *)fi->fh)->fh), LOCK_UN);
+            }
+            else
+            {
+                if (AZS_PRINT)
+                {
+                    fprintf(stdout, "Lock acquisition failed, errno = %d\n", errno);
+                }
+            }
+        }
         close(((struct fhwrapper *)fi->fh)->fh);
     }
     else
@@ -447,6 +428,8 @@ int azs_release(const char *path, struct fuse_file_info * fi)
             fprintf(stdout, "Access failed.\n");
         }
     }
+
+
     delete (struct fhwrapper *)fi->fh;
     return 0;
 }
